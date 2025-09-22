@@ -12,7 +12,7 @@ export default function handler(req, res) {
   const host =
     req.headers["x-forwarded-host"] ||
     req.headers.host ||
-    "server-test-ten-coral.vercel.app";
+    "finlumina-vox.vercel.app";
   const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0];
 
   // When Twilio first hits this endpoint, send instructions
