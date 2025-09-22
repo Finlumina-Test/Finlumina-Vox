@@ -22,8 +22,7 @@ export default function handler(req, res) {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="alice">
-    Assalamualaikum. This is a test call by the courtesy of Finlumina call agent.
-    It may be recorded for order processing. Please speak after the beep. Press star when you are finished.
+    By Finlumina-Vox
   </Say>
   <Record action="${actionUrl}" method="POST" maxLength="120" playBeep="true" finishOnKey="*" />
   <Say voice="alice">We did not receive a recording. Goodbye.</Say>
