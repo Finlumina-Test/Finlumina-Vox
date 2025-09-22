@@ -1,4 +1,3 @@
-// pages/api/process-recording.js
 import OpenAI from "openai";
 import { ElevenLabsClient } from "elevenlabs";
 import fs from "fs";
@@ -80,7 +79,7 @@ export default async function handler(req, res) {
     const gptResponse = completion.choices[0].message.content;
     console.log("🤖 GPT Response:", gptResponse);
 
-    // ElevenLabs TTS (returns a stream, not arrayBuffer)
+    // ElevenLabs TTS
     const audioStream = await eleven.textToSpeech.convert(VOICE_ID, {
       text: gptResponse,
       model_id: "eleven_multilingual_v2",
@@ -108,15 +107,13 @@ export default async function handler(req, res) {
       req.headers.host ||
       "finlumina-vox.vercel.app";
     const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0];
-    const actionUrl = `${proto}://${host}/api/process-recording`;
     const fileUrl = `${proto}://${host}/api/tmp/${fileName}`;
 
-    // TwiML: Play ElevenLabs audio, then record again
+    // TwiML: Play ElevenLabs audio, then end call
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Play>${fileUrl}</Play>
-  <Record action="${actionUrl}" method="POST" maxLength="120" playBeep="true" finishOnKey="*"/>
-  <Say voice="alice">No input received. Goodbye.</Say>
+  <Hangup/>
 </Response>`;
 
     res.setHeader("Content-Type", "text/xml");
@@ -127,6 +124,7 @@ export default async function handler(req, res) {
     res.status(200).send(`
       <Response>
         <Say voice="alice">Sorry, there was an error processing your request.</Say>
+        <Hangup/>
       </Response>
     `);
   }
