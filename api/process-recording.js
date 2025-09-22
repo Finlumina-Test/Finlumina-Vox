@@ -12,6 +12,7 @@ const eleven = new ElevenLabsClient({
   apiKey: process.env.ELEVENLABS_API_KEY,
 });
 
+// Your custom Urdu/English voice
 const VOICE_ID = "FOtIACPya7JrUALJeYnn";
 
 // Helper: retry fetching Twilio recording up to 3 times
@@ -49,27 +50,25 @@ export default async function handler(req, res) {
       return res.status(405).send("Method not allowed");
     }
 
-    console.log("📩 Incoming Twilio Recording Request body:", req.body);
+    console.log("📩 Incoming Twilio Recording Request:", req.body);
 
     const recordingUrl = req.body.RecordingUrl;
     if (!recordingUrl) {
       throw new Error("No recording URL received from Twilio.");
     }
 
-    console.log("🎧 Fetching recording from Twilio:", recordingUrl);
+    // Fetch audio with retry logic
     const audioBuffer = await fetchTwilioRecording(recordingUrl);
-    console.log("🎧 Recording fetched, size:", audioBuffer.length);
 
     // Transcribe with Whisper
-    console.log("📝 Sending to Whisper...");
     const transcription = await openai.audio.transcriptions.create({
       file: new File([audioBuffer], "recording.mp3", { type: "audio/mpeg" }),
       model: "whisper-1",
     });
-    console.log("📝 Transcription result:", transcription);
+
+    console.log("📝 Transcription:", transcription.text);
 
     // GPT response
-    console.log("🤖 Sending transcription to GPT:", transcription.text);
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -81,9 +80,8 @@ export default async function handler(req, res) {
     const gptResponse = completion.choices[0].message.content;
     console.log("🤖 GPT Response:", gptResponse);
 
-    // ElevenLabs TTS
-    console.log("🎤 Sending GPT response to ElevenLabs...");
-    const audio = await eleven.textToSpeech.convert(VOICE_ID, {
+    // ElevenLabs TTS (returns a stream, not arrayBuffer)
+    const audioStream = await eleven.textToSpeech.convert(VOICE_ID, {
       text: gptResponse,
       model_id: "eleven_multilingual_v2",
       voice_settings: {
@@ -91,21 +89,18 @@ export default async function handler(req, res) {
         similarity_boost: 0.8,
       },
     });
-    console.log("🎤 ElevenLabs response received");
 
-    // Save audio to /tmp (Vercel ephemeral storage)
+    // Save audio to /tmp
     const fileName = `reply_${Date.now()}.mp3`;
     const filePath = path.join("/tmp", fileName);
-    console.log("💾 Writing file to:", filePath);
 
-    try {
-      const buffer = Buffer.from(await audio.arrayBuffer());
-      await fs.promises.writeFile(filePath, buffer);
-      console.log("💾 File successfully written, size:", buffer.length);
-    } catch (fsErr) {
-      console.error("❌ Error writing file to /tmp:", fsErr);
-      throw fsErr;
-    }
+    const writeStream = fs.createWriteStream(filePath);
+    await new Promise((resolve, reject) => {
+      audioStream.pipe(writeStream);
+      audioStream.on("end", resolve);
+      audioStream.on("error", reject);
+    });
+    console.log("✅ Saved ElevenLabs audio to", filePath);
 
     // Build URL for Twilio to fetch audio
     const host =
@@ -115,8 +110,6 @@ export default async function handler(req, res) {
     const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0];
     const actionUrl = `${proto}://${host}/api/process-recording`;
     const fileUrl = `${proto}://${host}/api/tmp/${fileName}`;
-
-    console.log("🔗 File URL for Twilio:", fileUrl);
 
     // TwiML: Play ElevenLabs audio, then record again
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -130,12 +123,10 @@ export default async function handler(req, res) {
     res.status(200).send(twiml);
   } catch (err) {
     console.error("❌ Error in process-recording:", err);
-
-    // Echo more detail back in Twilio response for now
     res.setHeader("Content-Type", "text/xml");
     res.status(200).send(`
       <Response>
-        <Say voice="alice">Sorry, there was an error: ${err.message}</Say>
+        <Say voice="alice">Sorry, there was an error processing your request.</Say>
       </Response>
     `);
   }
