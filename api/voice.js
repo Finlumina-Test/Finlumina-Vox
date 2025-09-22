@@ -15,17 +15,16 @@ export default function handler(req, res) {
     "finlumina-vox.vercel.app";
   const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0];
 
-  // When Twilio first hits this endpoint, send instructions
+  // After recording, Twilio will POST here
   const actionUrl = `${proto}://${host}/api/process-recording`;
 
-  // Generate TwiML response
+  // TwiML response to start call
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="alice">
-    By Finlumina-Vox
-  </Say>
-  <Record action="${actionUrl}" method="POST" maxLength="120" playBeep="true" finishOnKey="*" />
+  <Say voice="alice"> By Finlumina Vox. .</Say>
+  <Record action="${actionUrl}" method="POST" maxLength="120" playBeep="true" finishOnKey="*"/>
   <Say voice="alice">We did not receive a recording. Goodbye.</Say>
+  <Hangup/>
 </Response>`;
 
   // Return XML
