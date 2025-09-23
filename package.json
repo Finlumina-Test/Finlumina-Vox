@@ -11,6 +11,7 @@
     "openai": "^4.0.0",
     "twilio": "^4.21.0",
     "node-fetch": "^3.3.2",
-    "elevenlabs": "^0.3.0"
+    "elevenlabs": "^0.3.0",
+    "form-data": "^4.0.0"
   }
 }
