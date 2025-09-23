@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { ElevenLabsClient } from "elevenlabs";
 import fetch from "node-fetch";
-import FormData from "form-data";
+import { v2 as cloudinary } from "cloudinary";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -9,6 +9,13 @@ const openai = new OpenAI({
 
 const eleven = new ElevenLabsClient({
   apiKey: process.env.ELEVENLABS_API_KEY,
+});
+
+// Configure Cloudinary SDK
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
 // Your custom Urdu/English voice
@@ -43,23 +50,23 @@ async function fetchTwilioRecording(recordingUrl) {
   throw lastErr;
 }
 
-// Upload buffer to Cloudinary
+// Upload buffer to Cloudinary with SDK
 async function uploadToCloudinary(buffer, fileName) {
-  const form = new FormData();
-  form.append("file", buffer, { filename: fileName });
-  form.append("upload_preset", process.env.CLOUDINARY_UPLOAD_PRESET);
-  form.append("folder", "finlumina-vox"); // optional
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        resource_type: "auto",
+        public_id: `finlumina-vox/${fileName}`,
+        overwrite: true,
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result.secure_url);
+      }
+    );
 
-  const res = await fetch(
-    `https://api.cloudinary.com/v1_1/${process.env.CLOUDINARY_CLOUD_NAME}/auto/upload`,
-    { method: "POST", body: form }
-  );
-
-  if (!res.ok) {
-    throw new Error(`Cloudinary upload failed: ${res.status}`);
-  }
-  const data = await res.json();
-  return data.secure_url;
+    stream.end(buffer); // send buffer to Cloudinary
+  });
 }
 
 export default async function handler(req, res) {
