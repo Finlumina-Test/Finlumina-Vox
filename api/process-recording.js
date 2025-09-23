@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { ElevenLabsClient } from "elevenlabs";
-import fs from "fs";
-import path from "path";
+import fetch from "node-fetch";
+import FormData from "form-data";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -43,6 +43,25 @@ async function fetchTwilioRecording(recordingUrl) {
   throw lastErr;
 }
 
+// Upload buffer to Cloudinary
+async function uploadToCloudinary(buffer, fileName) {
+  const form = new FormData();
+  form.append("file", buffer, { filename: fileName });
+  form.append("upload_preset", process.env.CLOUDINARY_UPLOAD_PRESET);
+  form.append("folder", "finlumina-vox"); // optional
+
+  const res = await fetch(
+    `https://api.cloudinary.com/v1_1/${process.env.CLOUDINARY_CLOUD_NAME}/auto/upload`,
+    { method: "POST", body: form }
+  );
+
+  if (!res.ok) {
+    throw new Error(`Cloudinary upload failed: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.secure_url;
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -56,10 +75,10 @@ export default async function handler(req, res) {
       throw new Error("No recording URL received from Twilio.");
     }
 
-    // Fetch audio with retry logic
+    // 1. Fetch audio with retry logic
     const audioBuffer = await fetchTwilioRecording(recordingUrl);
 
-    // Transcribe with Whisper
+    // 2. Transcribe with Whisper
     const transcription = await openai.audio.transcriptions.create({
       file: new File([audioBuffer], "recording.mp3", { type: "audio/mpeg" }),
       model: "whisper-1",
@@ -67,7 +86,7 @@ export default async function handler(req, res) {
 
     console.log("📝 Transcription:", transcription.text);
 
-    // GPT response
+    // 3. GPT response
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -79,7 +98,7 @@ export default async function handler(req, res) {
     const gptResponse = completion.choices[0].message.content;
     console.log("🤖 GPT Response:", gptResponse);
 
-    // ElevenLabs TTS
+    // 4. ElevenLabs TTS → Buffer
     const audioStream = await eleven.textToSpeech.convert(VOICE_ID, {
       text: gptResponse,
       model_id: "eleven_multilingual_v2",
@@ -89,27 +108,18 @@ export default async function handler(req, res) {
       },
     });
 
-    // Save audio to /tmp
-    const fileName = `reply_${Date.now()}.mp3`;
-    const filePath = path.join("/tmp", fileName);
+    const chunks = [];
+    for await (const chunk of audioStream) chunks.push(chunk);
+    const finalBuffer = Buffer.concat(chunks);
 
-    const writeStream = fs.createWriteStream(filePath);
-    await new Promise((resolve, reject) => {
-      audioStream.pipe(writeStream);
-      audioStream.on("end", resolve);
-      audioStream.on("error", reject);
-    });
-    console.log("✅ Saved ElevenLabs audio to", filePath);
+    // 5. Upload to Cloudinary
+    const fileUrl = await uploadToCloudinary(
+      finalBuffer,
+      `reply_${Date.now()}.mp3`
+    );
+    console.log("☁️ Uploaded reply to Cloudinary:", fileUrl);
 
-    // Build URL for Twilio to fetch audio
-    const host =
-      req.headers["x-forwarded-host"] ||
-      req.headers.host ||
-      "finlumina-vox.vercel.app";
-    const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0];
-    const fileUrl = `${proto}://${host}/api/tmp/${fileName}`;
-
-    // TwiML: Play ElevenLabs audio, then end call
+    // 6. TwiML: Play Cloudinary audio, then hang up
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Play>${fileUrl}</Play>
