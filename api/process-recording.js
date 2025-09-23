@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { ElevenLabsClient } from "elevenlabs";
 import fetch from "node-fetch";
-import { v2 as cloudinary } from "cloudinary";
+import FormData from "form-data";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -9,13 +9,6 @@ const openai = new OpenAI({
 
 const eleven = new ElevenLabsClient({
   apiKey: process.env.ELEVENLABS_API_KEY,
-});
-
-// Configure Cloudinary SDK
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
 // Your custom Urdu/English voice
@@ -50,23 +43,23 @@ async function fetchTwilioRecording(recordingUrl) {
   throw lastErr;
 }
 
-// Upload buffer to Cloudinary with SDK
+// Upload buffer to Cloudinary
 async function uploadToCloudinary(buffer, fileName) {
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      {
-        resource_type: "auto",
-        public_id: `finlumina-vox/${fileName}`,
-        overwrite: true,
-      },
-      (error, result) => {
-        if (error) return reject(error);
-        resolve(result.secure_url);
-      }
-    );
+  const form = new FormData();
+  form.append("file", buffer, { filename: fileName });
+  form.append("upload_preset", process.env.CLOUDINARY_UPLOAD_PRESET);
+  form.append("folder", "finlumina-vox"); // optional
 
-    stream.end(buffer); // send buffer to Cloudinary
-  });
+  const res = await fetch(
+    `https://api.cloudinary.com/v1_1/${process.env.CLOUDINARY_CLOUD_NAME}/auto/upload`,
+    { method: "POST", body: form }
+  );
+
+  if (!res.ok) {
+    throw new Error(`Cloudinary upload failed: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.secure_url;
 }
 
 export default async function handler(req, res) {
@@ -126,11 +119,13 @@ export default async function handler(req, res) {
     );
     console.log("☁️ Uploaded reply to Cloudinary:", fileUrl);
 
-    // 6. TwiML: Play Cloudinary audio, then hang up
+    // 6. TwiML: Play AI reply, then keep listening
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Play>${fileUrl}</Play>
-  <Hangup/>
+  <Gather input="speech" action="/api/process-recording" method="POST" timeout="5">
+    <Say voice="alice">I'm listening...</Say>
+  </Gather>
 </Response>`;
 
     res.setHeader("Content-Type", "text/xml");
@@ -141,7 +136,9 @@ export default async function handler(req, res) {
     res.status(200).send(`
       <Response>
         <Say voice="alice">Sorry, there was an error processing your request.</Say>
-        <Hangup/>
+        <Gather input="speech" action="/api/process-recording" method="POST" timeout="5">
+          <Say voice="alice">Please try again.</Say>
+        </Gather>
       </Response>
     `);
   }
