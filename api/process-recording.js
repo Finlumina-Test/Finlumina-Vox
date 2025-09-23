@@ -1,145 +1,117 @@
-import OpenAI from "openai";
-import { ElevenLabsClient } from "elevenlabs";
+import express from "express";
+import bodyParser from "body-parser";
 import fetch from "node-fetch";
-import FormData from "form-data";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { v2 as cloudinary } from "cloudinary";
+import OpenAI from "openai";
 
+const app = express();
+app.use(bodyParser.urlencoded({ extended: false }));
+
+// Cloudinary config ✅
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// OpenAI client
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const eleven = new ElevenLabsClient({
-  apiKey: process.env.ELEVENLABS_API_KEY,
-});
+// Conversation store (naive in-memory for demo)
+let conversationHistory = [];
 
-// Your custom Urdu/English voice
-const VOICE_ID = "FOtIACPya7JrUALJeYnn";
+// Helper: sleep
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Helper: retry fetching Twilio recording up to 3 times
-async function fetchTwilioRecording(recordingUrl) {
-  const authHeader =
-    "Basic " +
-    Buffer.from(
-      `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
-    ).toString("base64");
-
-  let lastErr;
-  for (let i = 0; i < 3; i++) {
-    const res = await fetch(`${recordingUrl}.mp3`, {
-      headers: { Authorization: authHeader },
-    });
-
-    if (res.ok) {
-      console.log(`✅ Successfully fetched recording on attempt ${i + 1}`);
-      return Buffer.from(await res.arrayBuffer());
+// Download recording with retries ✅
+async function downloadRecording(recordingUrl, retries = 5, delay = 3000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const res = await fetch(`${recordingUrl}.wav`);
+      if (!res.ok) throw new Error(`Twilio fetch failed: ${res.status}`);
+      const buffer = await res.arrayBuffer();
+      const filePath = path.join("/tmp", `recording_${Date.now()}.wav`);
+      fs.writeFileSync(filePath, Buffer.from(buffer));
+      return filePath;
+    } catch (err) {
+      console.warn(`Retry ${i + 1}/${retries} failed: ${err.message}`);
+      if (i < retries - 1) await sleep(delay);
     }
-
-    lastErr = new Error(`Fetch failed: ${res.status} ${res.statusText}`);
-    console.warn(
-      `⚠️ Recording not ready (attempt ${i + 1}), retrying in 2s...`
-    );
-    await new Promise((r) => setTimeout(r, 2000));
   }
-
-  throw lastErr;
+  throw new Error("Failed to download Twilio recording after retries");
 }
 
-// Upload buffer to Cloudinary
-async function uploadToCloudinary(buffer, fileName) {
-  const form = new FormData();
-  form.append("file", buffer, { filename: fileName });
-  form.append("upload_preset", process.env.CLOUDINARY_UPLOAD_PRESET);
-  form.append("folder", "finlumina-vox"); // optional
-
-  const res = await fetch(
-    `https://api.cloudinary.com/v1_1/${process.env.CLOUDINARY_CLOUD_NAME}/auto/upload`,
-    { method: "POST", body: form }
-  );
-
-  if (!res.ok) {
-    throw new Error(`Cloudinary upload failed: ${res.status}`);
-  }
-  const data = await res.json();
-  return data.secure_url;
-}
-
-export default async function handler(req, res) {
+// Upload to Cloudinary ✅
+async function uploadToCloudinary(filePath) {
   try {
-    if (req.method !== "POST") {
-      return res.status(405).send("Method not allowed");
-    }
+    const result = await cloudinary.uploader.upload(filePath, {
+      resource_type: "video", // audio/wav counts as video
+    });
+    return result.secure_url;
+  } catch (err) {
+    console.error("Cloudinary upload failed:", err.message);
+    throw new Error("Cloudinary upload failed");
+  } finally {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath); // cleanup tmp ✅
+  }
+}
 
-    console.log("📩 Incoming Twilio Recording Request:", req.body);
-
+app.post("/process-recording", async (req, res) => {
+  try {
     const recordingUrl = req.body.RecordingUrl;
     if (!recordingUrl) {
-      throw new Error("No recording URL received from Twilio.");
+      return res.status(400).send("Missing RecordingUrl");
     }
 
-    // 1. Fetch audio with retry logic
-    const audioBuffer = await fetchTwilioRecording(recordingUrl);
+    // Download with retry
+    const filePath = await downloadRecording(recordingUrl);
 
-    // 2. Transcribe with Whisper
-    const transcription = await openai.audio.transcriptions.create({
-      file: new File([audioBuffer], "recording.mp3", { type: "audio/mpeg" }),
-      model: "whisper-1",
+    // Upload to Cloudinary
+    const cloudinaryUrl = await uploadToCloudinary(filePath);
+
+    // Add user turn to conversation
+    conversationHistory.push({
+      role: "user",
+      content: `User spoke, audio file at: ${cloudinaryUrl}`,
     });
 
-    console.log("📝 Transcription:", transcription.text);
-
-    // 3. GPT response
+    // GPT reply (conversation continues)
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "You are a helpful AI voice assistant." },
-        { role: "user", content: transcription.text },
-      ],
+      messages: conversationHistory,
     });
 
-    const gptResponse = completion.choices[0].message.content;
-    console.log("🤖 GPT Response:", gptResponse);
+    const reply = completion.choices[0].message.content;
 
-    // 4. ElevenLabs TTS → Buffer
-    const audioStream = await eleven.textToSpeech.convert(VOICE_ID, {
-      text: gptResponse,
-      model_id: "eleven_multilingual_v2",
-      voice_settings: {
-        stability: 0.5,
-        similarity_boost: 0.8,
-      },
-    });
+    // Add assistant turn to history
+    conversationHistory.push({ role: "assistant", content: reply });
 
-    const chunks = [];
-    for await (const chunk of audioStream) chunks.push(chunk);
-    const finalBuffer = Buffer.concat(chunks);
+    console.log("✅ GPT Reply:", reply);
 
-    // 5. Upload to Cloudinary
-    const fileUrl = await uploadToCloudinary(
-      finalBuffer,
-      `reply_${Date.now()}.mp3`
-    );
-    console.log("☁️ Uploaded reply to Cloudinary:", fileUrl);
-
-    // 6. TwiML: Play AI reply, then keep listening
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Play>${fileUrl}</Play>
-  <Gather input="speech" action="/api/process-recording" method="POST" timeout="5">
-    <Say voice="alice">I'm listening...</Say>
-  </Gather>
-</Response>`;
-
-    res.setHeader("Content-Type", "text/xml");
-    res.status(200).send(twiml);
-  } catch (err) {
-    console.error("❌ Error in process-recording:", err);
-    res.setHeader("Content-Type", "text/xml");
-    res.status(200).send(`
+    // Send back GPT’s reply (Twilio <Say> or TTS will speak this)
+    res.type("text/xml");
+    res.send(`
       <Response>
-        <Say voice="alice">Sorry, there was an error processing your request.</Say>
-        <Gather input="speech" action="/api/process-recording" method="POST" timeout="5">
-          <Say voice="alice">Please try again.</Say>
-        </Gather>
+        <Say voice="alice">${reply}</Say>
+        <Record 
+          action="/process-recording" 
+          method="POST" 
+          maxLength="30" 
+          playBeep="true" />
       </Response>
     `);
+  } catch (err) {
+    console.error("❌ Error in process-recording:", err);
+    res.status(500).send("Internal Server Error");
   }
-}
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
+});
