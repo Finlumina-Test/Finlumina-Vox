@@ -1,5 +1,5 @@
 // pages/api/voice.js
-// Twilio webhook for incoming calls → responds with TwiML to record the caller
+// Twilio webhook for incoming calls → responds with TwiML to start a <Stream>
 
 export default function handler(req, res) {
   // Allow both GET and POST from Twilio
@@ -15,16 +15,16 @@ export default function handler(req, res) {
     "finlumina-vox.vercel.app";
   const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0];
 
-  // After recording, Twilio will POST here
-  const actionUrl = `${proto}://${host}/api/process-recording`;
+  // WebSocket endpoint where Twilio will send audio
+  const streamUrl = `${proto}://${host}/api/realtime-handler`;
 
-  // TwiML response to start call
+  // TwiML response to start live stream
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="alice"> By Finlumina Vox. .</Say>
-  <Record action="${actionUrl}" method="POST" maxLength="120" playBeep="true" finishOnKey="*"/>
-  <Say voice="alice">We did not receive a recording. Goodbye.</Say>
-  <Hangup/>
+  <Say voice="alice">By Finlumina Vox. Starting realtime conversation.</Say>
+  <Connect>
+    <Stream url="${streamUrl}" />
+  </Connect>
 </Response>`;
 
   // Return XML
