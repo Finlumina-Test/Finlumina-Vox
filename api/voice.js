@@ -1,33 +1,25 @@
-// pages/api/voice.js
-// Twilio webhook for incoming calls → responds with TwiML to start a <Stream>
+import { ElevenLabsClient } from "elevenlabs";
+import cloudinary from "cloudinary";
 
-export default function handler(req, res) {
-  // Allow both GET and POST from Twilio
-  if (req.method !== "POST" && req.method !== "GET") {
-    res.status(405).send("Method not allowed");
-    return;
-  }
+const eleven = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 
-  // Ensure host + protocol are set (for Vercel/Twilio forwarding)
-  const host =
-    req.headers["x-forwarded-host"] ||
-    req.headers.host ||
-    "finlumina-vox.vercel.app";
-  const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0];
+cloudinary.v2.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
-  // WebSocket endpoint where Twilio will send audio
-  const streamUrl = `${proto}://${host}/api/realtime-handler`;
+// Convert GPT text → ElevenLabs voice → upload to Cloudinary → return URL
+export async function synthesizeAndUpload(text, voiceId = "FOtIACPya7JrUALJeYnn") {
+  const audio = await eleven.textToSpeech.convert(voiceId, {
+    text,
+    model_id: "eleven_multilingual_v2",
+  });
 
-  // TwiML response to start live stream
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="alice">By Finlumina Vox. Starting realtime conversation.</Say>
-  <Connect>
-    <Stream url="${streamUrl}" />
-  </Connect>
-</Response>`;
+  const upload = await cloudinary.v2.uploader.upload_stream({
+    resource_type: "video",
+    format: "mp3",
+  });
 
-  // Return XML
-  res.setHeader("Content-Type", "text/xml");
-  res.status(200).send(twiml);
+  return upload.secure_url;
 }
